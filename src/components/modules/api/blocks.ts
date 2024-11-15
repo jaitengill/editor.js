@@ -225,7 +225,7 @@ export default class BlocksAPI extends Module {
    * @returns {Promise<void>}
    */
   public renderFromHTML(data: string): Promise<void> {
-    this.Editor.BlockManager.clear();
+    await this.Editor.BlockManager.clear();
 
     return this.Editor.Paste.processText(data, true);
   }
