@@ -232,7 +232,7 @@ export default class Paste extends Module {
    */
   public async processText(data: string, isHTML = false): Promise<void> {
     const { Caret, BlockManager } = this.Editor;
-    const dataToInsert = isHTML ? this.processHTML(data) : this.processPlain(data);
+    const dataToInsert = isHTML ? await this.processHTML(data) : this.processPlain(data);
 
     if (!dataToInsert.length) {
       return;
@@ -251,9 +251,20 @@ export default class Paste extends Module {
     const isCurrentBlockDefault = BlockManager.currentBlock && BlockManager.currentBlock.tool.isDefault;
     const needToReplaceCurrentBlock = isCurrentBlockDefault && BlockManager.currentBlock.isEmpty;
 
-    dataToInsert.map(
-      async (content, i) => this.insertBlock(content, i === 0 && needToReplaceCurrentBlock)
-    );
+    const BATCH_SIZE = 100; // Number of blocks to process per batch
+    for (let i = 0; i < dataToInsert.length; i += BATCH_SIZE) {
+      const batch = dataToInsert.slice(i, i + BATCH_SIZE);
+  
+      await new Promise((resolve) => {
+        requestAnimationFrame(() => {
+          batch.forEach((content, index) => {
+            this.insertBlock(content, i === 0 && index === 0 && needToReplaceCurrentBlock);
+          });
+          resolve();
+        });
+      });
+    }
+
 
     if (BlockManager.currentBlock) {
       Caret.setToBlock(BlockManager.currentBlock, Caret.positions.END);
@@ -576,128 +587,126 @@ export default class Paste extends Module {
    * @param {string} innerHTML - html string to process
    * @returns {PasteData[]}
    */
-  private processHTML(innerHTML: string): PasteData[] {
+  private async processHTML(innerHTML: string): Promise<PasteData[]> {
+    if (!innerHTML.trim()) {
+      return [];
+    }
+  
+    const CHUNK_SIZE = 100000; // Define chunk size for large HTML
+    const results: PasteData[] = [];
+  
+    if (innerHTML.length > CHUNK_SIZE) {
+      const chunks: string[] = [];
+  
+      for (let i = 0; i < innerHTML.length; i += CHUNK_SIZE) {
+        chunks.push(innerHTML.slice(i, i + CHUNK_SIZE));
+      }
+  
+      // Process chunks asynchronously to avoid UI freezing
+      for (const chunk of chunks) {
+        await this.processChunk(chunk, results);
+      }
+    } else {
+      // Process small HTML content directly
+      await this.processChunk(innerHTML, results);
+    }
+  
+    return results;
+  }
+  
+  private processChunk(chunk: string, results: PasteData[]): Promise<void> {
+    return new Promise((resolve) => {
+      const processChunkCallback = () => {
+        const wrapper = $.make('DIV');
+        wrapper.innerHTML = chunk;
+  
+        // Process nodes and collect results
+        const nodes = this.processNodes(wrapper);
+        results.push(...nodes);
+  
+        resolve();
+      };
+  
+      // Schedule processing to prevent UI blocking
+      if (typeof requestIdleCallback !== 'undefined') {
+        requestIdleCallback(processChunkCallback);
+      } else {
+        setTimeout(processChunkCallback, 0);
+      }
+    });
+  }
+  
+  private processNodes(wrapper: HTMLElement): PasteData[] {
     const { Tools } = this.Editor;
-
-    /**
-     * @todo Research, do we really need to always wrap innerHTML to a div:
-     *  - <img> tag could be processed separately, but for now it becomes div-wrapped
-     *    and then .getNodes() returns strange: [document-fragment, img]
-     *    (description of the method says that it should should return only block tags or fragments,
-     *     but there are inline-block element along with redundant empty fragment)
-     *  - probably this is a reason of bugs with unexpected new block creation instead of inline pasting:
-     *      - https://github.com/codex-team/editor.js/issues/1427
-     *      - https://github.com/codex-team/editor.js/issues/1244
-     *      - https://github.com/codex-team/editor.js/issues/740
-     */
-    const wrapper = $.make('DIV');
-
-    wrapper.innerHTML = innerHTML;
-
     const nodes = this.getNodes(wrapper);
-
+  
+    const toolTagsConfigs = new Map();
+  
     return nodes
       .map((node) => {
-        let content, tool = Tools.defaultTool, isBlock = false;
-
-        switch (node.nodeType) {
-          /** If node is a document fragment, use temp wrapper to get innerHTML */
-          case Node.DOCUMENT_FRAGMENT_NODE:
-            content = $.make('div');
-            content.appendChild(node);
-            break;
-
-          /** If node is an element, then there might be a substitution */
-          case Node.ELEMENT_NODE:
-            content = node as HTMLElement;
-            isBlock = true;
-
-            if (this.toolsTags[content.tagName]) {
-              tool = this.toolsTags[content.tagName].tool;
-            }
-            break;
-        }
-
-        /**
-         * Returns empty array if there is no paste config
-         */
-        const { tags: tagsOrSanitizeConfigs } = tool.pasteConfig || { tags: [] };
-
-        /**
-         * Reduce the tags or sanitize configs to a single array of sanitize config.
-         * For example:
-         * If sanitize config is
-         * [ 'tbody',
-         *   {
-         *     table: {
-         *       width: true,
-         *       height: true,
-         *     },
-         *   },
-         *   {
-         *      td: {
-         *        colspan: true,
-         *        rowspan: true,
-         *      },
-         *      tr: {  // <-- the second tag
-         *        height: true,
-         *      },
-         *   },
-         * ]
-         * then sanitize config will be
-         * [
-         *  'table':{},
-         *  'tbody':{width: true, height: true}
-         *  'td':{colspan: true, rowspan: true},
-         *  'tr':{height: true}
-         * ]
-         */
-        const toolTags = tagsOrSanitizeConfigs.reduce((result, tagOrSanitizeConfig) => {
-          const tags = this.collectTagNames(tagOrSanitizeConfig);
-
-          tags.forEach((tag) => {
-            const sanitizationConfig = _.isObject(tagOrSanitizeConfig) ? tagOrSanitizeConfig[tag] : null;
-
-            result[tag.toLowerCase()] = sanitizationConfig || {};
-          });
-
-          return result;
-        }, {});
-
-        const customConfig = Object.assign({}, toolTags, tool.baseSanitizeConfig);
-
-        /**
-         * A workaround for the HTMLJanitor bug with Tables (incorrect sanitizing of table.innerHTML)
-         * https://github.com/guardian/html-janitor/issues/3
-         */
-        if (content.tagName.toLowerCase() === 'table') {
-          const cleanTableHTML = clean(content.outerHTML, customConfig);
-          const tmpWrapper = $.make('div', undefined, {
-            innerHTML: cleanTableHTML,
-          });
-
-          content = tmpWrapper.firstChild;
+        let content: HTMLElement | DocumentFragment,
+          tool = Tools.defaultTool,
+          isBlock = false;
+  
+        if (node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+          content = $.make('div');
+          content.appendChild(node);
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          content = node as HTMLElement;
+          isBlock = true;
+  
+          const tagName = content.tagName;
+  
+          if (this.toolsTags[tagName]) {
+            tool = this.toolsTags[tagName].tool;
+          }
         } else {
-          content.innerHTML = clean(content.innerHTML, customConfig);
+          return null;
         }
-
-        const event = this.composePasteEvent('tag', {
-          data: content,
-        });
-
+  
+        let toolTags = toolTagsConfigs.get(tool.name);
+  
+        if (!toolTags) {
+          const { tags: tagsOrSanitizeConfigs = [] } = tool.pasteConfig || {};
+          toolTags = this.computeToolTags(tagsOrSanitizeConfigs, tool.baseSanitizeConfig);
+          toolTagsConfigs.set(tool.name, toolTags);
+        }
+  
+        if (content.tagName?.toLowerCase() === 'table') {
+          content = this.sanitizeTable(content, toolTags);
+        } else {
+          content.innerHTML = clean(content.innerHTML, toolTags);
+        }
+  
         return {
           content,
           isBlock,
           tool: tool.name,
-          event,
+          event: this.composePasteEvent('tag', { data: content }),
         };
       })
-      .filter((data) => {
-        const isEmpty = $.isEmpty(data.content);
-        const isSingleTag = $.isSingleTag(data.content);
-
-        return !isEmpty || isSingleTag;
+      .filter((data) => data && !$.isEmpty(data.content) && !$.isSingleTag(data.content));
+  }
+  
+  private computeToolTags(tagsOrSanitizeConfigs: any[], baseSanitizeConfig: any = {}): any {
+    const toolTags = tagsOrSanitizeConfigs.reduce((result, tagOrSanitizeConfig) => {
+      const tags = this.collectTagNames(tagOrSanitizeConfig);
+  
+      tags.forEach((tag) => {
+        const sanitizationConfig = _.isObject(tagOrSanitizeConfig) ? tagOrSanitizeConfig[tag] : null;
+        result[tag.toLowerCase()] = sanitizationConfig || {};
       });
+  
+      return result;
+    }, {});
+  
+    return { ...toolTags, ...baseSanitizeConfig };
+  }
+  
+  private sanitizeTable(table: HTMLElement, config: any): HTMLElement {
+    const cleanTableHTML = clean(table.outerHTML, config);
+    const tmpWrapper = $.make('div', undefined, { innerHTML: cleanTableHTML });
+    return tmpWrapper.firstChild as HTMLElement;
   }
 
   /**
