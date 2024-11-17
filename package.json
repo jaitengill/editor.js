@@ -5,14 +5,6 @@
   "main": "dist/editorjs.umd.js",
   "module": "dist/editorjs.mjs",
   "types": "./types/index.d.ts",
-  "keywords": [
-    "codex editor",
-    "text editor",
-    "editor",
-    "editor.js",
-    "editorjs",
-    "wysiwyg"
-  ],
   "scripts": {
     "dev": "vite",
     "prepare": "npm run build",
@@ -32,12 +24,6 @@
     "test:e2e": "yarn build:test && cypress run",
     "test:e2e:open": "yarn build:test && cypress open",
     "devserver:start": "yarn build && node ./devserver.js"
-  },
-  "author": "CodeX",
-  "license": "Apache-2.0",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/jaitengill/editor.js.git"
   },
   "devDependencies": {
     "@babel/register": "^7.21.0",
@@ -72,10 +58,6 @@
     "typescript": "5.0.3",
     "vite": "^4.2.1",
     "vite-plugin-css-injected-by-js": "^3.1.0"
-  },
-  "collective": {
-    "type": "opencollective",
-    "url": "https://opencollective.com/editorjs"
   },
   "dependencies": {
     "@editorjs/caret": "^1.0.1",
