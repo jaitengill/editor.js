@@ -13,7 +13,7 @@
     "lint": "eslint src/ --ext .ts && yarn lint:tests",
     "lint:errors": "eslint src/ --ext .ts --quiet",
     "lint:fix": "eslint src/ --ext .ts --fix",
-    "lint:tests": "eslint test/ --ext .ts",
+    "lint:tests": "eslint test/ --ext .ts"
   },
   "devDependencies": {
     "@babel/register": "^7.21.0",
